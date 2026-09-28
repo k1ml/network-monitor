@@ -1,0 +1,43 @@
+[project]
+name = "network-monitor"
+version = "0.1.0"
+description = "Simple graphical network status monitor (pinger)"
+authors = [
+    {name = "Chris Wilson", email = "chris+github@qwirx.com"},
+]
+dependencies = [
+    "aiodns",
+    "aiohttp",
+    "aiojobs",
+    "aiomonitor",
+    "frozendict",
+    "Jinja2",
+    "pandas",
+    "ping3",
+    "pingparsing",
+    "pipdeptree",
+    "pytest",
+    "requests",
+    "ruff",
+    "type_enforced",
+    "strace-macos @ git+https://github.com/Mic92/strace-macos",
+]
+requires-python = ">=3.9"
+readme = "README.md"
+license = {text = "BSD-3-Clause"}
+
+[build-system]
+requires = ["pdm-backend"]
+build-backend = "pdm.backend"
+
+[tool.pdm]
+distribution = true
+
+[tool.pdm.scripts]
+server = "python -X dev src/network_monitor/bin/monitor.py"
+# server = "python -X dev -m aiohttp.web network_monitor.bin.monitor:aiohttp_web_entrypoint"
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]

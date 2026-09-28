@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+
+{% block title %}Network Monitor{% endblock %}
+{% block heading %}Network Monitor{% endblock %}
+
+{% block front_row %}{{ body|safe }}{% endblock %}
+
+{% block scripts %}
+<script src="https://cdn.jsdelivr.net/npm/ag-charts-community/dist/umd/ag-charts-community.js"></script>
+
+<script>
+// const wsUri = "ws://127.0.0.1/";
+const wsUri = "ws://" + window.location.host + "{{ websocket_url }}";
+const websocket = new WebSocket(wsUri);
+websocket.addEventListener("error", (e) => {
+  log(`ERROR`);
+});
+websocket.addEventListener("open", () => {
+  console.log("CONNECTED");
+  pingInterval = setInterval(() => {
+    console.log(`SENT: ping: ${counter}`);
+    websocket.send("ping");
+  }, 1000);
+});
+var counter = 1;
+websocket.addEventListener("message", (e) => {
+  var message = e.data;
+  console.log(`RECEIVED: ${counter}: ${message}`);
+  var json_data = JSON.parse(message)
+  if (json_data !== undefined && json_data !== null && json_data.constructor == Object)
+  {
+    if ('hosts_table' in json_data)
+    {
+        document.getElementById('hosts_table').innerHTML = json_data['hosts_table'];
+    }      
+  }
+  counter++;
+});
+</script>
+
+{% endblock %}
