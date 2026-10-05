@@ -8,6 +8,7 @@ authors = [
 dependencies = [
     "aiodns",
     "aiohttp",
+    "aiohttp_jinja2",
     "aiojobs",
     "aiomonitor",
     "frozendict",
@@ -16,13 +17,14 @@ dependencies = [
     "ping3",
     "pingparsing",
     "pipdeptree",
+    "pycares >= 5.0.1",
     "pytest",
     "requests",
     "ruff",
     "type_enforced",
     "strace-macos @ git+https://github.com/Mic92/strace-macos",
 ]
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 readme = "README.md"
 license = {text = "BSD-3-Clause"}
 

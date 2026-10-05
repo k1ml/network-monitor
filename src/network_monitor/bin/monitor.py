@@ -20,6 +20,7 @@ from abc import ABC, abstractmethod
 from enum import Enum, auto
 
 import aiodns
+import aiohttp_jinja2
 import aiomonitor
 import attrs
 import jinja2
@@ -31,6 +32,8 @@ from aiohttp import ClientConnectionResetError, web
 from aiojobs.aiohttp import setup
 from ping3 import errors
 from pycares import ARecordData, DNSResult
+
+from network_monitor import STATIC_DIRECTORY
 
 logging.basicConfig(
     level=logging.DEBUG,
@@ -49,13 +52,13 @@ class TargetStatus(Enum):
 
 @attrs.define
 class TargetTestResult:
-    status: TargetStatus
-    details: dict | Exception | None
+    status: TargetStatus = attrs.field()
+    details: dict | Exception | None = attrs.field()
 
 
 class Probe(ABC):
     @abstractmethod
-    async def probe(self, target: Target,
+    async def probe(self, target: 'Target',
                     ip_addresses: list[str]) -> TargetTestResult:
         """Probe the supplied target once, and return a TargetTestResult."""
 
@@ -109,7 +112,7 @@ class PingParserProbe(Probe):
         else:
             status = TargetStatus.GREEN
 
-        return TargetTestResult(status, result)
+        return TargetTestResult(status, {'result': result})
 
 
 async def cancel_task(task: asyncio.Task):
@@ -514,10 +517,10 @@ class Handler:
     def __attrs_post_init__(self):
         self.target_to_ips = {}
         self.target_to_last_result = {}
-        self.jinja_env = jinja2.Environment(
-            loader=jinja2.PackageLoader("network_monitor"),
-            autoescape=jinja2.select_autoescape()
-        )
+        #self.jinja_env = jinja2.Environment(
+        #    loader=jinja2.PackageLoader("network_monitor"),
+        #    autoescape=jinja2.select_autoescape()
+        #)
         self.websockets = []
 
     def get_template(self, name):
@@ -581,9 +584,9 @@ class Handler:
         loop = asyncio.get_running_loop()
         #  breakpoint()
 
-        try:
-            loop_counter = 0
-            while True:  # until cancelled
+        loop_counter = 0
+        while True:  # until cancelled
+            try:
                 loop_counter += 1
                 logger.debug(f"Starting probes (round {loop_counter})")
                 start_time = loop.time()
@@ -593,44 +596,56 @@ class Handler:
                 target_to_task = {}
                 target_to_result = {}
 
-                async with asyncio.TaskGroup() as tg:
-                    for target in TARGETS:
-                        target_ips_or_exc = self._target_ips_or_exc(target)
-                        if target_ips_or_exc is None:
-                            target_to_result[target] = TargetTestResult(
-                                TargetStatus.YELLOW,
-                                ValueError("DNS lookup not finished yet"),
-                            )
-                        elif isinstance(target_ips_or_exc, Exception):
-                            target_to_result[target] = TargetTestResult(
-                                TargetStatus.RED,
-                                target_ips_or_exc,
-                            )
-                        else:
-                            target_to_task[target] = tg.create_task(
-                                asyncio.wait_for(
-                                    target.probe.probe(target, target_ips_or_exc),
-                                    self.interval,
-                                ),
-                                name=f"{target} polling round {loop_counter}",
-                            )
+                # async with asyncio.TaskGroup() as tg:
+                for target in TARGETS:
+                    target_ips_or_exc = self._target_ips_or_exc(target)
+                    if target_ips_or_exc is None:
+                        target_to_result[target] = TargetTestResult(
+                            TargetStatus.YELLOW,
+                            ValueError("DNS lookup not finished yet"),
+                        )
+                    elif isinstance(target_ips_or_exc, Exception):
+                        target_to_result[target] = TargetTestResult(
+                            TargetStatus.RED,
+                            target_ips_or_exc,
+                        )
+                    else:
+                        target_to_task[target] = asyncio.create_task(
+                            asyncio.wait_for(
+                                target.probe.probe(target, target_ips_or_exc),
+                                self.interval,
+                            ),
+                            name=f"{target} {loop_counter}",
+                        )
 
-                # All tasks awaited by TaskGroup
-                for target, task in target_to_task.items():
-                    target_to_result[target] = task.result()
+                # We don't want ay failing Task to kill everything in the TaskGroup, so await
+                # them all now:
+                results = await asyncio.gather(*target_to_task.values(), return_exceptions=True)
+
+                for target, result in zip(target_to_task, results, strict=True):
+                    target_to_result[target] = result
+                    logger.debug(f"{target.name}: {result}")
 
                 for target, result in target_to_result.items():
-                    if isinstance(result.details, Exception):
+                    if isinstance(result, BaseException):
                         # Only log if result changes (e.g. from good to exception,
                         # or to a different exception) to avoid spamming logs:
                         if self.target_to_last_result[target] != result:
-                            logger.info(f"Failed to ping {target}: {result}")
+                            logger.info(f"Error probing {target}: {type(result)}: {result}")
+                        num_failed += 1
+                        result = TargetTestResult(TargetStatus.RED, result)
+                    elif isinstance(result.details, BaseException):
+                        # Only log if result changes (e.g. from good to exception,
+                        # or to a different exception) to avoid spamming logs:
+                        if self.target_to_last_result[target] != result:
+                            logger.info(f"Failed to ping {target}: {type(result)}: {result}")
                         num_failed += 1
                     else:
-                        logger.debug(f"Received ping response from {target}: "
+                        logger.debug(f"Received ping response from {target.name}: "
                                      f"{result}")
                         num_success += 1
 
+                    assert isinstance(result, TargetTestResult)
                     self.target_to_last_result[target] = result
 
                 end_time = loop.time()
@@ -642,14 +657,23 @@ class Handler:
                 updated_hosts_table = self.generate_hosts_table()
                 for websocket in list(self.websockets):
                     try:
-                        await websocket.send_json({'hosts_table': updated_hosts_table})
+                        await websocket.send_json({
+                            'hosts_table': updated_hosts_table,
+                            'hosts_data': [
+                                (target.name, result.details['latency'])
+                                for target, result in self.target_to_last_result.items()
+                                if isinstance(result, TargetTestResult)
+                            ],
+                        })
                     except ClientConnectionResetError:
                         logger.info(f"Client disconnected: {websocket}")
                         self.websockets.remove(websocket)
                 await asyncio.sleep(sleep_time)
-        except asyncio.CancelledError:
-            logger.info("Ending probe loop (cancelled)")
-            raise
+            except asyncio.CancelledError:
+                logger.info("Ending probe loop (cancelled)")
+                raise
+            except Exception as exc:
+                logger.warning(f"Caught exception during polling loop: {exc}", exc_info=True)
 
     async def on_startup(self, app):
         self.run_loop_task = asyncio.create_task(self.run_loop(), name="run_loop_task")
@@ -658,16 +682,14 @@ class Handler:
         await cancel_task(self.run_loop_task)
 
     @routes.get('/', name='index')
+    @aiohttp_jinja2.template('index.html')
     async def handle_index(self, request):
         # name = request.match_info.get('name', "Anonymous")
         hosts_table = self.generate_hosts_table()
-        return web.Response(
-            body=self.get_template("index.html").render(
-                body=f'<div id="hosts_table" class="col">{hosts_table}</div>',
-                websocket_url=request.app.router['websocket-table'].canonical,
-            ),
-            content_type="text/html",
-        )
+        return {
+            'body': f'<div id="hosts_table" class="col">{hosts_table}</div>',
+            'websocket_url': request.app.router['websocket-table'].canonical,
+        }
 
     @routes.get('/ws/table', name='websocket-table')
     async def handle_websocket(self, request):
@@ -689,6 +711,17 @@ class Handler:
         app.add_routes(
             attrs.evolve(route, handler=getattr(self, route.handler.__name__))
             for route in routes
+        )
+        aiohttp_jinja2.setup(
+            app, 
+            loader=jinja2.PackageLoader("network_monitor"),
+        )
+        app['static_root_url'] = '/static'
+        app.router.add_static(
+            app['static_root_url'],
+            path=STATIC_DIRECTORY, 
+            name='static', 
+            append_version=True,
         )
         app.on_startup(self.on_startup)
         app.on_cleanup(self.on_cleanup)

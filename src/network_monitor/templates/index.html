@@ -3,39 +3,29 @@
 {% block title %}Network Monitor{% endblock %}
 {% block heading %}Network Monitor{% endblock %}
 
-{% block front_row %}{{ body|safe }}{% endblock %}
+{% block front_row %}
+{{ body|safe }}
+<div class="col-md-12 mt-3">
+  <div id="box_alert_warning" class="alert alert-warning" role="alert" hidden="true">
+    This is a warning alert—check it out!
+  </div>
+</div>
+{% endblock %}
 
 {% block scripts %}
-<script src="https://cdn.jsdelivr.net/npm/ag-charts-community/dist/umd/ag-charts-community.js"></script>
-
+<!--<script src="https://cdn.jsdelivr.net/npm/ag-charts-community/dist/umd/ag-charts-community.js"></script>-->
+<script src="{{ static('chart.js-4.5.1/dist/chart.umd.min.js') }}"></script>
 <script>
-// const wsUri = "ws://127.0.0.1/";
 const wsUri = "ws://" + window.location.host + "{{ websocket_url }}";
-const websocket = new WebSocket(wsUri);
-websocket.addEventListener("error", (e) => {
-  log(`ERROR`);
-});
-websocket.addEventListener("open", () => {
-  console.log("CONNECTED");
-  pingInterval = setInterval(() => {
-    console.log(`SENT: ping: ${counter}`);
-    websocket.send("ping");
-  }, 1000);
-});
-var counter = 1;
-websocket.addEventListener("message", (e) => {
-  var message = e.data;
-  console.log(`RECEIVED: ${counter}: ${message}`);
-  var json_data = JSON.parse(message)
-  if (json_data !== undefined && json_data !== null && json_data.constructor == Object)
-  {
-    if ('hosts_table' in json_data)
-    {
-        document.getElementById('hosts_table').innerHTML = json_data['hosts_table'];
-    }      
-  }
-  counter++;
-});
 </script>
+<script src="{{ url('static', filename='monitor.js') }}"></script>
 
+<style>
+.dataframe {
+  width: 100%;
+}
+.uptime_bar {
+  height: 2em;
+}
+</style>
 {% endblock %}
